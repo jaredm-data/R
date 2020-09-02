@@ -1,0 +1,348 @@
+---
+title: "IST707_HW4"
+author: "Jared Mosley"
+date: "7/23/2020"
+output: word_document
+---
+# Mystery in History: Cluster Analysis & The Federalist Papers
+
+## Introduction
+
+The Federalist Papers consists of 85 essays penned by Alexander Hamilton, James Madison, and John Jay. They were authored under the pseudonym "Publius" in varius journals and news publications in 1787 and 1788. They were published in a move to encourage the ratification of the United States Constitution. Interestingly enough, in 1804 only after Hamilton died did the authors true names emerge. 
+
+Once the names were released, there were several papers whose authorship has been disputed to this day. While Hamilton claimed to have authored the majority of the papers, recent advances in science have shown that that some of the papers do not match the style and tone of the claimed authors.
+
+This report will perform an analysis on the author's styles in attempt to cluster the disputed articles among papers with the most similar styles. In the end, we hope to match the styles in an attempt to identify the true author.
+
+https://en.wikipedia.org/wiki/The_Federalist_Papers
+
+# Data Preparation
+
+## About the Data
+
+Tell me about the dataset
+
+## Data Structure
+
+What does it contain?
+
+### Read in Libraries
+```{r, message=F}
+library(SnowballC)
+library(tm)
+library(wordcloud)
+library(cluster)
+library(proxy)
+library(factoextra)
+```
+
+### Load in the Corpus
+
+Files provided from https://github.com/boltonvandy/IST707repo/tree/master/FedPapersCorpus.
+
+Load in the corpus and check to see it was performed properly.
+
+```{r}
+# Read in corpus from disk
+FPC <- Corpus(DirSource("C:/Users/jared/iCloudDrive/Documents/Coding/R/Homework/FedPapersCorpus"))
+
+# Check to ensure files read in properly
+summary(FPC)
+meta(FPC[[1]])
+meta(FPC[[1]],5)
+```
+
+### Initial Cleaning
+
+Begin exploring the data and using the DocumentTermMatrix, vectorize it. Eliminate overly common and extremely rare words. Then, examine the counts and frequencies of terms.
+
+```{r}
+# Remove Punctuatuion, numbers, spaces
+getTransformations()
+
+# Set length and ignore words with less than 1% use and appearing in more than 50% of the documents.
+nFPC <- length(FPC)
+minTermFreq <- nFPC*.001
+maxTermFreq <- nFPC*1
+
+# Load in stop words
+STOPS <- stopwords('english')
+
+# Run DTM with stopwords, set lengths, removing punctuation and numbers, setting to lowercase, using stemming, removing separators, and setting frequency boundaries.
+Papers_DTM <- DocumentTermMatrix(FPC,
+                                  control = list(
+                                    stopwords = TRUE,
+                                    stopwords = STOPS,
+                                    wordLengths = c(3,15),
+                                    removePunctuation = TRUE,
+                                    removeNumbers = TRUE,
+                                    tolower = TRUE,
+                                    stemming = TRUE,
+                                    remove_separators = TRUE,
+                                    bounds = list(global=c(minTermFreq,maxTermFreq))
+                                  ))
+DTM <- as.matrix(Papers_DTM) # Set as matrix
+
+DTM[1:11,1:10] # Inspect
+
+# Count column sumns as word frequencies
+WordFreq <- colSums(DTM)
+length(WordFreq) # Check total counts
+orderedWordFreq <- order(WordFreq) # Order frequencies
+WordFreq[head(orderedWordFreq)] # Inspect lowest 5
+WordFreq[tail(orderedWordFreq)] # Inspect top 5
+RowSumPerDoc <- rowSums(DTM) # Count matching terms per document
+RowSumPerDoc # Inspect
+```
+
+
+# Analysis & Models
+
+### Distance Metrics
+
+We will be computing the distances based off of various methods such as Euclidean, Manhattan, Cosine, and Cosine with a normalized distribution to run our models.
+
+The Euclidean distance measures "as the crow flies," or rather the shortest distance between two points. The Manhattan distance measures in "blocks" or rather the absolute values between two points. The Cosine measurement works best in "high-dimensional" space.. It works by finding the angular distance between points. Lastly, the Cosine Normalized is exactly what it sounds like, a normalized approach to cosine simlarity, but for our data size it should not provide much variability, though we will still examine it.
+```{r}
+# Normalize the DTM
+NormDTM <- t(apply(DTM,1,function(i) round (i/sum(i),3)))
+# Examine for accuracy
+NormDTM[c(1:11),c(1000:1010)]
+
+EuclideanDist <- dist(DTM, method='euclidean')
+#print(EuclideanDist)
+
+ManhattanDist <- dist(DTM, method='manhattan')
+#print(ManhattanDist)
+
+CosineDist <- dist(DTM, method='cosine')
+#print(CosineDist)
+
+CosineDistNorm <- dist(NormDTM, method='cosine')
+#print(CosineDistNorm)
+```
+## Clustering Methods
+
+Two types of clustering methods will be performed. First we will evaluate the Heirarchical Algorithm Clustering Method, and later we will evaluate the K-Means Algorithm Clustering Method. 
+
+### Heirarchical Algorithm Clustering 
+
+The Heirarchical Algorithm Clustering Method measures the distance by starting with initial points as clusters and measuring the distances between other points, merging the clusters until only one remains. We will measure the distance in several ways.
+
+```{r}
+# HAC: Heirarchical Algorithm Clustering Method
+# Euclidean
+group_E <- hclust(EuclideanDist, method="ward.D")
+plot(group_E, cex=0.5, font=22, hang=-1, main= "HAC Cluster Dendogram with Euclidean Similarity")
+rect.hclust(group_E, k=10)
+
+# Manhattan
+group_M <- hclust(ManhattanDist, method="ward.D")
+plot(group_M, cex=0.5, font=22, hang=-1, main= "HAC Cluster Dendogram with Manhattan Similarity")
+rect.hclust(group_M, k=10)
+
+# Cosine
+group_C <- hclust(CosineDist, method="ward.D")
+plot(group_C, cex=0.5, font=22, hang=-1, main= "HAC Cluster Dendogram with Cosine Similarity")
+rect.hclust(group_C, k=10)
+
+# Cosine Normalized
+group_N <- hclust(CosineDistNorm, method="ward.D")
+plot(group_N, cex=0.5, font=22, hang=-1, main= "HAC Cluster Dendogram with Cosine Similarity Normalized")
+rect.hclust(group_N, k=10)
+```
+
+The dendrographs created isolate best in my opinion at 10 clusters. Anything less and you cannot accurately place the locations of the disputed papers. 
+
+The Euclidean similarity performed adequately, creating one large cluster, and some clusters being far too small. It did however place many of the disputed papers with Madison, though only matching to one of his papers, and generally created clusters that contained little crossover between authors, though they did contain inaccurate authorship. It did suggest a large portion (Papers 63, 54, 52, 53, 57, 56, and 55) of the disputed papers were Madsion's, with a couple given to Hamilton (Papers 50, 62), and some unclear.
+
+The Manhattan similarity performed better, with two large clusters that are primarily Hamilton, though with Jay, Madison and the disputed papers sprinkled in. It appears to cluster the majority of the papers with Madison (Papers 63, 54, 53, 56, 57, 52, and 55), and the remaining with Hamilton (Papers 51, 49, 50, and 62). The clustering appears more precise for the disputed papers.
+
+The Cosine similarity performed rather indecisively, with decent cluster sizes, though with much crossover in authorship. Additionally the normalized Cosine similarity performed rather poorly, with one large mixed cluster and many other clusters that are not perfectly matching.
+
+It appears that the Manhattan actually performed the best when evaluating the Heirarchical Algorithm Clustering Method.
+
+### K-Means Clustering
+
+The K-Means Clustering works by finding the mean of a group of central points,  called the centroid, and begins by partitioning the data objects in relation to the distance from that mean.
+
+```{r}
+# K-Means Algorithm Clustering Method
+k1 <- kmeans(DTM, centers=4, nstart=100, iter.max=50)
+str(k1)
+summary(k1)
+
+k2 <- kmeans(DTM, centers=6, nstart=50, iter.max=50)
+str(k2)
+summary(k2)
+
+# Visualize the k means 
+#Euclidean
+dist1 <- get_dist(NormDTM, method= "euclidean")
+fviz_dist(dist1, gradient=list(low="blue", mid="white", high="Red"))
+
+#Manhattan
+dist2 <- get_dist(NormDTM, method= "manhattan")
+fviz_dist(dist2, gradient=list(low="blue", mid="white", high="red"))
+
+```
+
+When visualizing the K-Means results, it immediately stands out that the Euclidean method was much more decisive in determining similarity. The Blue values cluster in the middle, which align with primarily Hamilton's papers. It picks out Jay and Madison in the Red, but isn't intuitively selecting them accurately. The Manhattan method has much less dicisiveness, and majority of the values return closer to the middle. It does cluster Hanmilton a little more accurately around the middle, and Madison towards the end, though the disputed papers are not intuitive.
+
+## Initial Results
+
+Initial results are a bit unclear, but it appears the Heirarchical approach is more intuitive and perhaps more accurate. The Heirarchical approach clusters the majority of the disputed papers to Madison, with only a couple identified as being Hamilton's. This goes against Hamilton's claims that he authored the majority of the papers.
+
+
+# Analysis Using "Top 10" Words
+
+In an attempt to further clarify the results, we will perform the same analysis as above, though narrowing our scope of words from 85 to only the top 10, as decided by use rates between the authors.
+
+### Word Clouds for Common Word Usage Visualization
+
+Create and visualize a wordcloud for Hamilton, Madison, and the disputed authorship papers, excluding those by John Jay. 
+We can see that the word usage by the Hamilton set of papers lacks as high of a frequency as the word usage in both the Madison and Disputed sets of papers. 
+
+```{r}
+# Word cloud viz for Disputed Papers
+DisputedPapersWC <- wordcloud(colnames(DTM), DTM[11,])
+# Word cloud viz for Hamilton Papers
+HamiltonPapersWC <- wordcloud(colnames(DTM), DTM[12:62,])
+# Word cloud viz for Madison Papers
+MadisonPapersWC <- wordcloud(colnames(DTM), DTM[63:77,])
+
+```
+
+### Setup the Data
+
+Upon seeing the wordclouds, it might be easier and more intuitive to identify the top words based on use rate comparison between authors. We will choose a set of 10 words that have the highest usage, and minimal stemming. These 10 words will serve as a guide to performing a second set of cluster analysis in hopes of further identifying the unknown authors. 
+
+
+```{r}
+# Identify Top words for Hamilton
+HamiltonWords <- head(sort(colSums(DTM[12:62,]), decreasing=T), n=100)
+
+# Identify Top words for Madison
+MadisonWords <- head(sort(colSums(DTM[63:77,]), decreasing=T), n=100)
+# Put in a DF for comparison
+worddf <- data.frame(HamiltonWords, MadisonWords)
+# Compare use rate averages
+worddf$HamiltonDif <- (worddf$HamiltonWords/sum(worddf$HamiltonWords))/(worddf$MadisonWords/sum(worddf$MadisonWords))
+# Reclustering based off of "top" 10 words
+wordstop10 <- c("interest", "time", "shall", "general", "part", "must", 
+                "great", "particula", "upon", "might")
+
+DTM10 <- DocumentTermMatrix(FPC,
+                                  control = list(
+                                    dictionary = wordstop10,
+                                    removePunctuation = TRUE,
+                                    removeNumbers = TRUE,
+                                    tolower = TRUE,
+                                    stemming = TRUE,
+                                    remove_separators = TRUE,
+                                    bounds = list(global=c(minTermFreq,maxTermFreq))
+                                  ))
+DTM10 <- as.matrix(DTM10)
+# Normalize the DTM
+NormDTM10 <- t(apply(DTM10,1,function(i) round (i/sum(i),3)))
+
+```
+
+### Distance Metrics
+
+```{r}
+# Create Distance Metrics
+
+EuclideanDist10 <- dist(DTM10, method='euclidean')
+#print(EuclideanDist10)
+
+ManhattanDist10 <- dist(DTM10, method='manhattan')
+#print(ManhattanDist10)
+
+CosineDist10 <- dist(DTM10, method='cosine')
+#print(CosineDist10)
+
+CosineDistNorm10 <- dist(NormDTM10, method='cosine')
+#print(CosineDistNorm10)
+```
+
+## Clustering Methods
+
+
+### Heirarchical Algorithm Clustering Method
+
+```{r}
+# HAC: Heirarchical Algorithm Clustering Method
+# Euclidean
+group_E10 <- hclust(EuclideanDist10, method="ward.D")
+plot(group_E10, cex=0.5, font=22, hang=-1, main= "HAC Top 10 Cluster Dendogram with Euclidean Similarity")
+rect.hclust(group_E10, k=10)
+
+# Manhattan
+group_M10 <- hclust(ManhattanDist10, method="ward.D")
+plot(group_M10, cex=0.5, font=22, hang=-1, main= "HAC Top 10 Cluster Dendogram with Manhattan Similarity")
+rect.hclust(group_M10, k=10)
+
+# Cosine
+group_C10 <- hclust(CosineDist10, method="ward.D")
+plot(group_C10, cex=0.5, font=22, hang=-1, main= "HAC Top 10 Cluster Dendogram with Cosine Similarity")
+rect.hclust(group_C10, k=10)
+
+# Cosine Normalized
+group_N10 <- hclust(CosineDistNorm10, method="ward.D")
+plot(group_N10, cex=0.5, font=22, hang=-1, main= "HAC Top 10 Cluster Dendogram with Cosine Similarity Normalized")
+rect.hclust(group_N10, k=10)
+```
+
+When evaluating the 10 chosen words under the Euclidean clustering method, we see strong accurate clustering on the last nine clusters, with ther first cluster containins a wide spread of authorship. This result is quite poor, and therefore will not be explored.
+
+The Manhattan clustering method performed much better, though still left much to be desired. The clusters are mostly accurate unless including the disputed papers, in which the authorship is too broad in that cluster. The cosine and cosine simlarity performed very similarly, and were surprisingly decisive. The cosine similarity determined that papers 52, 63, 51, 62, 55, 53, 56, 57, and 49 to be authored by Madison, similar to our results above. Papers 54 and 50 are determined to be authored by Hamilton.
+
+
+
+### K-Means Clustering
+
+```{r}
+# K-Means Algorithm Clustering Method
+k1_10 <- kmeans(NormDTM10, centers=3, nstart=100, iter.max=50)
+str(k1_10)
+summary(k1_10)
+k1_10$cluster
+
+k2_10 <- kmeans(NormDTM10, centers=5, nstart=50, iter.max=50)
+str(k2_10)
+summary(k2_10)
+k2_10$cluster
+
+# Visualize the k means 
+#Euclidean
+dist1_10 <- get_dist(NormDTM10, method= "euclidean")
+fviz_dist(dist1_10, gradient=list(low="cyan", mid="white", high="Orange"))
+
+#Manhattan
+dist2_10 <- get_dist(NormDTM10, method= "manhattan")
+fviz_dist(dist2_10, gradient=list(low="cyan", mid="white", high="Orange"))
+
+```
+Reading the K-Means clusters, we see that the majority of the papers fall in line with Madison's authorship, which matches our assessment from above.
+Visualizing both the K- Means Euclidean and Manhattan method show very checkered dispersion, with Hamilton near the middle and Madison on the fringes. As above, it is not intuitively obvious where the disputed papers lie. 
+
+## Results
+
+When evaluating the top 10 words chosen, we did find perhaps our best clustering yet for the Cosine Similarity in the Heirarchical Algorithmic Clustering method, though found that we had less "usable" methods overall. However, we did find similar clustering as above with the Cosine similarity, and have enough data to dispute authorship.
+
+# Conclusion
+
+The dispute of the authorship of the Federalist papers has been a mystery to many avid history scholars, and may continue to confound the best minds out there. When evaluating the authorship of the 11 disputed papers via Clustering, we can deduct the following:
+
+There is strong evidence to suggest papers 52, 53, 55, 56, 57, and 63 were authored by Madison. There is less strong evidence that suggests Madison also authored paper 54. There is strong evidence that suggests that Hamilton authored paper 50, and less strong evidence that Hamilton also authored paper 62. Papers 49 and 51 remain disputed in this analysis.
+
+Contrary to Hamilton's claims, our analysis suggests that Madison in fact authored the majority of the disputed papers, though Hamilton may have authored at least one. 
+
+* Madison: 63, 52, 53, 55, 56, 57
+* Probably Madison: 54
+* Hamilton: 50
+* Probably Hamilton: 62
+* Disputed: 51, 49
+
+

@@ -1,0 +1,669 @@
+---
+title: "HW6/7"
+author: "Jared Mosley"
+date: "8/11/2020"
+output: word_document
+toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(FactoMineR)
+library(rattle)
+library(plyr)
+library(dplyr)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(lattice)
+library(ggplot2)
+library(wvtool)
+library(class)
+library(randomForest)
+```
+
+
+# Overview
+
+The MNIST ("Modified National Institue of Standards and Technology") dataset is the prelimanary machine learning dataset for anyone interested in understanding computer vision.
+
+It contains thousands of training and testing images of handwritten numbers from 0-9 written by the American Census Bureau employees for the training data, and by American high school students for the testing data. Each image was normalized and fit into a 28x28 pixel box.
+
+The objective is simple: build various models to see if you can accurately classify the numbers written in the testing data. For this experiment, we will be using a slimmed down MNIST dataset.
+
+```{r}
+# Import the csv
+train <- read.csv('Kaggle-digit-train-sample-small-1400.csv')
+test <- read.csv('Kaggle-digit-test-sample1000.csv')
+```
+
+Checking the dimensionality of the training data, we find 1400 observations of 785 variables. For the testing data, we find 1000 observations of 785 variables. The first column in each is a label of a digit from 0-9, and the remaining variables are pixels represented as integers. These 784 variables will make up a 28 x 28 image grid. Each variable is a value from 0-255 representing the level of shading, with the lower numbers indicating lightness and higher numbers representing darkness.
+
+As the csv's we imported are already provided as subsets, there is little additional cleaning to be done. At most, we will partition the training data and remove the labels later on.
+
+```{r}
+# check dimensionality
+dim(train)
+dim(test)
+
+# Convert label into a factor
+train$label <- as.factor(train$label)
+
+ptm <- proc.time()
+```
+
+# EDA
+
+Visualizing the set, we see a relatively even dispersion frequency of the labels in the trainind dataset, with "1" a little higher than the rest, though this does fit Benford's law. 
+
+We also look to vizualize the pixel mapping of each number. You can see how the shading values represented in the 28x28 grid can be restructured back into their image format.
+
+```{r}
+# Visualize dispersion of digits in the train dataset
+ggplot(train, aes(x=label, fill=label)) + geom_bar() + ggtitle("Frequency of Labels in Train Data Set")
+
+# Visualize the underlying pixels
+par(mfrow=c(3,3))
+loop.vector <- 1:9
+for(i in 1:9){
+  im <- matrix((train[i,2:ncol(train)]), nrow = 28, ncol = 28)
+  im_numbers <- apply(im, 1, as.numeric)
+  im_numbers <- rotate.matrix(im_numbers, 90)
+  image(im_numbers, col=grey.colors(255), xlim = c(0,1), ylim = c(0.1,1.1))
+}
+
+```
+
+
+
+# Analysis
+
+
+## Decision Tree 
+
+The decision tree is a supervised learning method for classification. It learns from the data by breaking it down into different subsets, branching out as it goes. The deeper the tree, the more decision rules and lower the confidence for the rules gets. The trees can then predict outcomes based off of the decision steps on each branch.
+
+### Decision Tree: Our Baseline
+
+Using the rpart function, we set now limits to our cp, but allow for 100 minimum splits and a max depth of 10. This inital baseline setup returns an accuracy of 80.29% as well as an elapsed computing time of 5.96. It appears around that at 25 splits the relative error begins to deviate more.
+
+```{r}
+set.seed(22)
+# Train the decision tree without PCA
+dtrain1 <- rpart(label ~ ., train, method='class',
+                 control = rpart.control(cp=0),
+                 minsplit=100, maxdepth=10)
+
+# Run prediction
+pdtrain1 <- data.frame(predict(dtrain1,train))
+
+# Reformat for better evaluation
+pdtrain1 <- as.data.frame(names(pdtrain1[apply(pdtrain1, 1, which.max)]))
+# Reaname column
+colnames(pdtrain1) <- 'prediction'
+pdtrain1$number <- substr(pdtrain1$prediction, 2, 2)
+pdtrain1 <- train %>% bind_cols(pdtrain1) %>% select(label, number) %>% 
+  mutate(label = as.factor(label), number = as.factor(round(as.numeric(number), 0)))
+
+# Visualize decision trees
+rsq.rpart(dtrain1)
+fancyRpartPlot(dtrain1)
+
+# Return most valuable pixels
+important <- (varImp(dtrain1, scale=F))
+important$Value <- rownames(important)
+top <- important %>% arrange(desc(Overall)) 
+head(top)
+
+# Evaluate           
+confusionMatrix(pdtrain1$number, pdtrain1$label)
+proc.time() - ptm
+```
+
+### Decision Tree: With PCA
+
+Using PCA to Reduce Dimensionality, we are able to summarize the patterns in the large dataset, and reduce to smaller (more identifiable) values that will drastically cut the dimensions from the dataset, which can greatly enhance the computing times for each problem. Here we reduce to 6 dimensions.
+
+```{r}
+# Set seed for reproducability
+set.seed(22)
+
+# Set up pca train parameters
+pcadigits <- PCA(t(select(train, -label)))
+
+# Regroup into data frame
+pcatrain <- data.frame(train$label, pcadigits$var$coord)
+
+# Rename first column
+names(pcatrain)[1] <- "label"
+
+# Check new dimensionalityy
+dim(pcatrain)
+proc.time()- ptm
+```
+
+Running the same decision tree as above, in this example we are instead using data that has less dimensionality. Using the 6 dimensions, we actually find an accuracy of 75.21% and 2.7 computing time. This is much more efficient, though not as accurate as previously.
+
+```{r}
+# Train the decision tree with PCA
+dtrain2 <- rpart(label ~ ., pcatrain, method='class',
+                 control = rpart.control(cp=0),
+                 minsplit=100, maxdepth=10)
+
+# Run prediction
+pdtrain2 <- data.frame(predict(dtrain2,pcatrain))
+
+# Reformat for better evaluation
+pdtrain2 <- as.data.frame(names(pdtrain2[apply(pdtrain2, 1, which.max)]))
+# Reaname column
+colnames(pdtrain2) <- 'prediction'
+pdtrain2$number <- substr(pdtrain2$prediction, 2, 2)
+pdtrain2 <- train %>% bind_cols(pdtrain2) %>% select(label, number) %>% 
+  mutate(label = as.factor(label), number = as.factor(round(as.numeric(number), 0)))
+
+# Visualize decision trees
+rsq.rpart(dtrain2)
+fancyRpartPlot(dtrain2)
+
+confusionMatrix(pdtrain2$number, pdtrain2$label)
+proc.time()- ptm
+```
+
+### Decision Tree: With Pruning
+
+Pruning our initial tree, we are increasing the threshold of our cp to .01 in hopes to clear out any overfitting, as well as focusing on a minsplit of 25. This returns a lower accuracy of 68.57% and a 1.7 elapsed computing time. We are however pruning, and not running a "new" model.
+
+```{r}
+set.seed(22)
+# Train the decision tree with pruning
+dtrain3 <- prune(dtrain1, cp=.01, minsplit=25)
+
+# Run prediction
+pdtrain3 <- data.frame(predict(dtrain3,train))
+
+# Reformat for better evaluation
+pdtrain3 <- as.data.frame(names(pdtrain3[apply(pdtrain3, 1, which.max)]))
+# Reaname column
+colnames(pdtrain3) <- 'prediction'
+pdtrain3$number <- substr(pdtrain3$prediction, 2, 2)
+pdtrain3 <- train %>% bind_cols(pdtrain3) %>% select(label, number) %>% 
+  mutate(label = as.factor(label), number = as.factor(round(as.numeric(number), 0)))
+
+# Visualize decision trees
+# rsq.rpart(dtrain3)
+fancyRpartPlot(dtrain3)
+
+confusionMatrix(pdtrain3$number, pdtrain3$label)
+proc.time()- ptm
+```
+
+### Decision Tree: With Cross Validation
+
+In an attempt to see higher accuracy, we will focus on using cross fold validation, looking at 4 splits and using the average of all scores as our final result. For this instance, we see an accuracy of 62%, and an elapsed computing time of 4.6.
+
+```{r}
+# Set Seed for reproducability
+set.seed(22)
+N <- nrow(train)
+# Set number of splits
+kfolds <- 4
+# Set holdout variable for split
+holdout <- split(sample(1:N), 1:kfolds)
+# head(holdout)
+
+# Run training and testing for each k-fold
+AllResults <- list()
+AllLabels <- list()
+AllAccuracy <- list()
+par(mfrow = c(2,5))
+for (k in 1:kfolds) {
+  # Segement
+  digitTest <- train[holdout[[k]],]
+  digitTrain <- train[-holdout[[k]],]
+  # Remove labels from Test
+  digitTestWL <- digitTest$label
+  digitTestNL <- digitTest[-c(1)]
+  # Run naive Bayes
+  dtrainCV <- rpart(label~.,data=digitTrain, method="class")
+  # Run Predictiopn
+  pdtrainCV <- predict(dtrainCV, digitTestNL, type="class")
+  pdtrainCV
+  # Confusion Matrix
+  conf1 <- confusionMatrix(pdtrainCV, digitTest$label)
+  conf1
+  # Set up for plot
+  AllResults <- c(AllResults,pdtrainCV)
+  AllLabels <- c(AllLabels, digitTestWL)
+  AllAccuracy <- c(AllAccuracy, conf1$overall[1])
+  plot(pdtrainCV)
+}
+
+# Check Accuracy of all 
+mean(unlist(AllAccuracy))
+proc.time()- ptm
+
+```
+
+## Naive Bayes
+
+The Naive Bayes algorithm works to classify based on Bayes' theorem, though with strong independence between attrubutes allowing for a reduction in calculation from Bayes, hence the term "Naive." 
+
+### Naive Bayes: Baseline
+
+For our naive bayes analysis, we first need to segment the training data with and without a label, to learn on itself.
+
+```{r}
+# Remove label to set up clean data
+trainNL <- train[,-1]
+trainWL <- train$label
+```
+
+Our baseline naive bayes analysis resulted in an accuracy of 50.86% and an elapsed computing time of 14.9. These are both the lowest accuracy and the longest computing time of our analysis yet.
+
+```{r}
+set.seed(22)
+# Run the Naive Bayes on the training data
+nb1 <- naiveBayes(label ~ ., data=train, na.action=na.pass)
+
+# Predict the outcomes of the test data
+pnb1 <- predict(nb1, trainNL)
+#pnb1_df <- as.data.frame(pnb1)
+
+confusionMatrix(pnb1,trainWL)
+proc.time()- ptm
+```
+
+
+### Naive Bayes: With Less Dimensionality Using PCA of 5
+
+Similar to the last example, we are instead segmenting our training data for the PCA version.
+```{r}
+# Remove label to set up clean data
+pcatrainNL <- pcatrain[,-1]
+pcatrainWL <- pcatrain$label
+```
+
+This analysis with the PCA data improved our basline naive bayes, returning an accuracy of 64.43% and 1.2 elapsed computing time.
+
+```{r}
+set.seed(22)
+# Run the Naive Bayes on the training data
+nb2 <- naiveBayes(label ~ ., data=pcatrain, na.action=na.pass)
+
+# Predict the outcomes of the test data
+pnb2 <- predict(nb2, pcatrainNL)
+#pnb2_df <- as.data.frame(pnb2)
+
+confusionMatrix(pnb2,pcatrainWL)
+proc.time()- ptm
+```
+
+### Naive Bayes: With Less Dimensionality Using PCA of 15
+
+Seeing positive results with the dimensionality, we are now increasing the dimensionality to a PCA of 15 in hopes of improving our accuracy.
+
+```{r}
+
+# Set up pca train parameters
+pcadigits <- PCA(t(select(train, -label)), ncp = 15)
+
+# Regroup into data frame
+pcatrain <- data.frame(train$label, pcadigits$var$coord)
+# Rename first column
+names(pcatrain)[1] <- "label"
+dim(pcatrain) # actually runs at 16 dimensions
+# Remove label to set up clean data
+pcatrainNL <- pcatrain[,-1]
+pcatrainWL <- pcatrain$label
+proc.time()- ptm
+```
+
+Increasing the PCA, we drastically improve our results, with an accuracy of 82.57% and only 2.02 elapsed computing time.
+
+```{r}
+set.seed(22)
+# Run the Naive Bayes on the training data
+nb3 <- naiveBayes(label ~ ., data=pcatrain, na.action=na.pass)
+
+# Predict the outcomes of the test data
+pnb3 <- predict(nb3, pcatrainNL)
+#pnb2_df <- as.data.frame(pnb2)
+
+confusionMatrix(pnb3, pcatrainWL)
+proc.time()- ptm
+```
+
+### Naive Bayes: Using k-folds Cross Validation and PCA
+
+In order to see if we can elaborate on our last model, we will now add cross validation with 4 folds to see if it can improve our results. We oddly find .81 elapsed computing time, but 80.71% accuracy.
+
+```{r}
+# Set Seed for reproducability
+set.seed(22)
+# Set number of splits
+kfolds <- 4
+# Set holdout variable for split
+holdout <- split(sample(1:N), 1:kfolds)
+# head(holdout)
+
+# Run training and testing for each k-fold
+AllResults <- list()
+AllLabels <- list()
+AllAccuracy <- list()
+par(mfrow = c(2,5))
+for (k in 1:kfolds) {
+  # Segement
+  pdigitTest <- pcatrain[holdout[[k]],]
+  pdigitTrain <- pcatrain[-holdout[[k]],]
+  # Remove labels from Test
+  pdigitTestWL <- pdigitTest$label
+  pdigitTestNL <- pdigitTest[-c(1)]
+  # Run naive Bayes
+  nbtrain <- naiveBayes(label~.,data=pdigitTrain,na.action=na.pass)
+  # Run Predictiopn
+  nbpred <- predict(nbtrain, pdigitTestNL)
+  nbpred
+  # Confusion Matrix
+  conf1 <- confusionMatrix(nbpred, pdigitTest$label)
+  conf1
+  # Set up for plot
+  AllResults <- c(AllResults,nbpred)
+  AllLabels <- c(AllLabels, pdigitTestWL)
+  AllAccuracy <- c(AllAccuracy, conf1$overall[1])
+  plot(nbpred)
+}
+
+# Check Accuracy of all 
+mean(unlist(AllAccuracy))
+proc.time()- ptm
+
+```
+
+## kNN
+
+The k Nearest Neighbor algorithm stores available cases as data based on the distance between the values, or a similarity measure. It aims to classify like-variables based on proximity to how their neighbors are classified. It adds value by being a good algorithm for a complex decision, but can be less useful on noisy data. A large k value can cause underfitting, and the best results are typically from a k value less than 10.
+
+### kNN: Baseline
+
+Running our baseline kNN, we are setting the k value equal to the rounded square root of the train rows, or 37. This returns an accuracy of 85% and an elapsed computing time of 2.67. 
+
+```{r}
+set.seed(22)
+# set k equal to the rounded square root of the train rows
+# K is set to 37
+k <- round(sqrt(nrow(train)))
+# Set the prediction of kNN
+kNN1 <- knn(trainNL, trainNL, trainWL, k=k)
+# Evaluate
+confusionMatrix(kNN1, trainWL)
+proc.time()- ptm
+```
+
+### kNN: Optimal k Value Evaluation
+
+This section shows visually the accuracy output for different k values from 2-13. We see a declining accuracy, which could be alarming. We want to be cautious with too low of a k value as it may cause overfitting. The optimal k value is not visually apparent, so we will choose a k value of 5.
+
+```{r}
+set.seed(22)
+AllAccuracy.kNN <- list()
+# for loop to evaluate different accuracies based on different k values
+for (i in seq(2,46,4)) {
+  knn2 <- knn(trainNL, trainNL, trainWL, k=i)
+  knn2CM <- confusionMatrix(knn2, trainWL)
+  knn2ACC <- round(knn2CM$overall[1]*100,2)
+  AllAccuracy.kNN <- c(AllAccuracy.kNN, knn2CM$overall[1])
+}
+knnACC.df <- data.frame(kvalue=seq(2,13,1), as.data.frame((unlist(AllAccuracy.kNN))))
+colnames(knnACC.df)[2] <- 'kNN.Percent.Accuracy'
+knnACC.df$kNN.Percent.Accuracy <- round(knnACC.df$kNN.Percent.Accuracy*100,2)
+x <- barplot(knnACC.df$kNN.Percent.Accuracy, names.arg = knnACC.df$kvalue, xlab='Value for k', ylab = 'Percent Accuracy', main = 'Accuracy vs kNN k Value', las=1, ylim=c(0,100))
+y <- knnACC.df$kNN.Percent.Accuracy
+text(x,y+3,labels=as.character(y))
+proc.time()- ptm
+
+```
+
+### kNN: With Cross Fold Validation
+
+Using our k value of 5, we are now running our kNN algorithm with cross fold validation. This returns a strong accuracy of 89.21% with an elapsed computing time of 4.08.
+
+```{r}
+set.seed(22)
+AllResults <- data.frame(orig=c(), pred=c())
+for (k in 1:kfolds) {
+  # Segement
+  digitTest <- train[holdout[[k]],]
+  digitTrain <- train[-holdout[[k]],]
+  # Remove labels from Test
+  digitTestWL <- digitTest$label
+  digitTestNL <- digitTest[-c(1)]
+   # Remove labels from train
+  digitTrainWL <- digitTrain$label
+  digitTrainNL <- digitTrain[-c(1)]
+  kNN3 <- knn(digitTrain, digitTest, digitTrainWL, k=5)
+  AllResults <- rbind(AllResults, data.frame(orig=digitTestWL, pred=kNN3))
+}
+confusionMatrix(AllResults$orig, AllResults$pred)
+proc.time()- ptm
+```
+
+## SVM
+
+Support Vector Machines (SVM) work to visualize the data into multidimensional space, then segment the data points based off of optimal hyperplanes, maximizing the margins between the closest points and the "middle" hyperplane. 
+
+### SVM: Model with a Polynomial Kernel
+
+Our first SVM we will perform with a polynomial kernel. The Polynomial kernel is supposed to be best used for image processing. This evaluation returns an accuracy of 92% with 2.49 elapsed computing time.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+
+# Using the already partitioned digiTrain and digitTest
+# svm for a polynomial kernel
+svm1 <- svm(label~., data=digitTrain, kernel="polynomial", cost=.1, scale=FALSE)
+
+# predict
+psvm1 <- predict(svm1, digitTestNL, type="class")
+
+# check performance
+confusionMatrix(psvm1, digitTestWL)
+proc.time()- ptm
+```
+
+### SVM: Model with a Linear Kernel
+
+The most simplistic form of SVM is the linear kernel. Despite its simplicity, we actually return an improved 92.29% accuracy and 2.47 elapsed computing time.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+
+# Using the already partitioned digiTrain and digitTest
+# svm for a linear kernel
+svm2 <- svm(label~., data=digitTrain, kernel="linear", cost=.1, scale=FALSE)
+
+# predict
+psvm2 <- predict(svm2, digitTestNL, type="class")
+
+# check performance
+confusionMatrix(psvm2, digitTestWL)
+proc.time()- ptm
+```
+
+### SVM: Model with Radial Kernel
+
+The Radial kernel, or the Gaussian RBG kernel is best used when there is no priod knowledge of the data. This SVM however, mistakes all values for a "1" and is one of the worst performing algorithm yet, with an accuracy of 13.14% and 4.07 elapsed computing time.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+
+# Using the already partitioned digiTrain and digitTest
+# svm for a radial kernel
+svm3 <- svm(label~., data=digitTrain, kernel="radial", cost=.1, scale=FALSE)
+
+# predict
+psvm3 <- predict(svm3, digitTestNL, type="class")
+
+# check performance
+confusionMatrix(psvm3, digitTestWL)
+proc.time()- ptm
+```
+
+### SVM: Model with Sigmoid Kernel
+
+The Sigmoid is best used for neural networks, but we will examine it, because why not! This performs similarly to the radial kernel, with the same accuracy of 13.14% and 4.05 elapsed computing time.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+
+# Using the already partitioned digiTrain and digitTest
+# svm for a sigmoid kernel
+svm4 <- svm(label~., data=digitTrain, kernel="sigmoid", cost=.1, scale=FALSE)
+
+# predict
+psvm4 <- predict(svm4, digitTestNL, type="class")
+
+# check performance
+confusionMatrix(psvm4, digitTestWL)
+proc.time()- ptm
+```
+
+### SVM: Model with a Linear Kernel and PCA
+
+With the linear kernel performing the best, we will re-run the model with the PCA (less dimensional) data. This returns a lowered 79.43% accuracy, and 1.2 elapsed computing time.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+
+# Using the already partitioned digiTrain and digitTest
+# svm for a linear kernel
+svm5 <- svm(label~., data=pdigitTrain, kernel="linear", cost=.1, scale=FALSE)
+
+# predict
+psvm5 <- predict(svm5, pdigitTestNL, type="class")
+
+# check performance
+confusionMatrix(psvm5, pdigitTestWL)
+proc.time()- ptm
+```
+
+## Random Forest
+
+The random forest is a very diverse ensemble learning algorithm for machine learning due to its ease-of-use adn often great results. It performs supervised learning to build decision trees via the bagging method. It then predicts based on "votes" from the created subsets of decision trees.
+
+### Random Forest: Baseline
+
+Our baseline random forest is set with 500 trees and 2 splits. This returns an accuracy of 91.71% and a much larger than previous elapsed computing time of 19.27.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+
+rf1 <- randomForest(label ~ ., digitTrain, importance = T)
+prf1 <- predict(rf1, digitTestNL)
+confusionMatrix(prf1, digitTestWL)
+proc.time()- ptm
+```
+
+### Random Forest: Identifying "Best" mtry
+
+In order to identify the "best" value for mtry, we run a for loop for different values, and plot those with their accuracy. This is taxing on the computer's performance, but should help us isolate a value for better predictions in the future. We see the value for 6 and 7 seems to be the best.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+a <- c()
+i <- 5
+for (i in 3:10) {
+  rf2 <- randomForest(label ~.,digitTrain, ntree=500, 
+                      mtry=i, importance = T)
+  prf2 <- predict(rf2, digitTestNL, type="class")
+  a[i-2] <- mean(prf2 == digitTestWL)
+}
+
+plot(a*100, type='s', ylab = "Percent Accuracy", 
+     xlab = "mtry Value", main = "Percent Accuracy vs mtry Value")
+proc.time()- ptm
+```
+
+### Random Forest: Using optimal mtry
+
+Using the optimal value selected above, our new random forest returns an accuracy of 91.14% with an elapsed computing time of 21.82.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+# run random forest with 6 and 7 mtry 
+# (they produce the same accuracy)
+rf3 <- randomForest(label ~ ., digitTrain, ntree=500, mtry=7, importance = T)
+prf3 <- predict(rf3, digitTestNL)
+confusionMatrix(prf3, digitTestWL)
+proc.time()- ptm
+```
+
+### Random Forest: Using Optimal mtry and PCA
+
+In hopes of reducing computing time, we will re run our previous random forest, but this time using the less dimensional PCA data. This returns a slightly lowered accuracy of 87.14% but a much improved computing time of 1.96.
+
+```{r}
+# set seed for reproducability
+set.seed(22)
+# run random forest with 6 and 7 mtry, this time for pca data
+# (they produce the same accuracy)
+rf4 <- randomForest(label ~ ., pdigitTrain, ntree=500, mtry=7, importance = T)
+prf4 <- predict(rf4, pdigitTestNL)
+confusionMatrix(prf4, pdigitTestWL)
+proc.time() -ptm
+```
+
+
+
+# Model Performance Comparison
+
+Below I will list the different accuracies, along with their elapsed computing times (ECT).
+
+**Decision Trees:**
+
+* **Our Baseline.  80.29%, 5.96 ECT**
+* With PCA. 75.21%, 2.7 ECT
+* With Pruning. 68.57%, 1.7 ECT
+* With Cross Validation. 62%, 4.6 ECT
+
+**Naive Bayes:**
+
+* Baseline.  50.86%, 14.9 ECT
+* With Less Dimensionality Using PCA of 5.  64.43%, 1.2 ECT
+* **With Less Dimensionality Using PCA of 15.  82.57%, 2.02 ECT**
+* Using k-folds Cross Validation and PCA.  80.71%, 0.81 ECT
+
+**kNN:**
+
+* Baseline. 85%, 2.67 ECT
+* **With Cross Fold Validation.  89.21%, 4.08 ECT**
+
+**SVM:**
+
+* Model with a Polynomial Kernel. 92%, ECT 2.49
+* **Model with a Linear Kernel. 92.29%, 2.47 ECT**
+* Model with Radial Kernel. 13.14%, 4.07 ECT
+* Model with Sigmoid Kernel. 13.14%, 4.05 ECT
+* Model with a Linear Kernel and PCA. 79.43%, 1.2 ECT
+
+**Random Forest:**
+
+* **Baseline. 91.71%, 19.27 ECT**
+* Using optimal mtry. 91.14%, 21.82 ECT
+* Using Optimal mtry and PCA. 87.14%, 1.96 ECT
+
+# Conclusion
+
+Setting out to conquer the famed MNIST dataset, we can confirm that machine learning can be used to recognize hand-written digits. Reaching a maximum accuracy of 92.29% using linear kernel SVM, we can now apply that to identify the remaining test data of the MNIST dataset. 
+
+While the SVM reached the highest accuracy, the Random Forest had the highest accuracy consistently, though also ate up the most computing power. This makes the SVM model the most efficient under these circumstances, though if you could afford it I would personally recommend performing an average of the two, as I think they are truly too close to judge.
+
+Though we used different classifying algorithms, and several models each, it is obvious to see that not all algorithms performed well on the image categorization for the hand-writing samples. The Decision Tree and the Naive Bayes had the lowest overall performances, and would not be recommeneded for image recognition, though each algorithm had at least one model with above 80% recognition accuracy. 
